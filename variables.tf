@@ -67,3 +67,24 @@ variable "app_desired_count" {
   type        = number
   default     = 1
 }
+
+# ==========================================
+# Variables monitoring (ajoutées avec monitoring.tf)
+# ==========================================
+
+variable "budget_limit_usd" {
+  description = "Seuil mensuel de dépenses AWS en USD (alerte à 80%)"
+  type        = string
+  default     = "50"
+}
+
+variable "budget_alert_email" {
+  description = "Email pour les alertes budget AWS (obligatoire)"
+  type        = string
+}
+
+variable "bedrock_model_id" {
+  description = "ID du modèle Bedrock pour l'inference profile"
+  type        = string
+  default     = "anthropic.claude-3-haiku-20240307-v1:0"
+}

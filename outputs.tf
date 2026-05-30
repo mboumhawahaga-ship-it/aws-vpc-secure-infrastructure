@@ -1,29 +1,41 @@
-output "vpc_id" {
-  description = "ID du VPC"
-  value       = aws_vpc.main.id
+# ==========================================
+# OUTPUTS — valeurs utiles après terraform apply
+# ==========================================
+
+output "alb_url" {
+  description = "URL de l'ALB — coller dans un navigateur pour valider le 200"
+  value       = "http://${aws_lb.main.dns_name}"
 }
 
-output "bastion_public_ip" {
-  description = "IP publique du bastion - utiliser pour SSH"
-  value       = aws_instance.bastion.public_ip
+output "ecs_cluster_name" {
+  description = "Nom du cluster ECS"
+  value       = aws_ecs_cluster.main.name
 }
 
-output "app_private_ip" {
-  description = "IP privée de l'instance applicative"
-  value       = aws_instance.app.private_ip
+output "ecs_service_name" {
+  description = "Nom du service ECS"
+  value       = aws_ecs_service.app.name
 }
 
-output "rds_endpoint" {
-  description = "Endpoint RDS (accessible uniquement depuis le subnet privé)"
-  value       = aws_db_instance.mysql.endpoint
+output "log_group_name" {
+  description = "Log group CloudWatch des conteneurs"
+  value       = aws_cloudwatch_log_group.app.name
 }
 
-output "ssh_bastion_command" {
-  description = "Commande SSH pour accéder au bastion"
-  value       = "ssh -i <votre-cle.pem> ec2-user@${aws_instance.bastion.public_ip}"
+output "ecr_image_uri" {
+  description = "URI de l'image de test dans le registre ECR privé"
+  value       = local.nginx_image_uri
 }
 
-output "ssh_app_via_bastion_command" {
-  description = "Commande SSH pour accéder à l'instance privée via le bastion"
-  value       = "ssh -i <votre-cle.pem> -J ec2-user@${aws_instance.bastion.public_ip} ec2-user@${aws_instance.app.private_ip}"
+# Commande prête à l'emploi pour se connecter au conteneur
+# sans SSH. Remplacer <TASK_ID> par l'ID obtenu via :
+#   aws ecs list-tasks --cluster <cluster> --service-name <service>
+output "ecs_exec_command" {
+  description = "Commande ECS Exec pour debug (remplacer <TASK_ID>)"
+  value       = "aws ecs execute-command --cluster ${aws_ecs_cluster.main.name} --task <TASK_ID> --container app --interactive --command /bin/sh --region ${var.aws_region}"
+}
+
+output "inference_profile_arn" {
+  description = "ARN de l'inference profile Bedrock (à utiliser dans le task role)"
+  value       = aws_bedrock_inference_profile.app.arn
 }
