@@ -39,3 +39,31 @@ variable "environment" {
   type        = string
   default     = "dev"
 }
+
+# ==========================================
+# Variables conteneur (ajoutées avec ecs.tf)
+# ==========================================
+
+variable "container_cpu" {
+  description = "CPU alloué à la tâche Fargate (unités : 1 vCPU = 1024)"
+  type        = number
+  default     = 256
+}
+
+variable "container_memory" {
+  description = "Mémoire allouée à la tâche Fargate (MiB)"
+  type        = number
+  default     = 512
+}
+
+variable "container_port" {
+  description = "Port exposé par le conteneur (nginx = 80, app réelle = à ajuster)"
+  type        = number
+  default     = 80
+}
+
+variable "app_desired_count" {
+  description = "Nombre de tâches Fargate souhaitées"
+  type        = number
+  default     = 1
+}
