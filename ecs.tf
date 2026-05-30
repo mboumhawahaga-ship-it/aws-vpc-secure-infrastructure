@@ -91,10 +91,9 @@ resource "aws_ecs_task_definition" "app" {
 #   --task <id> --container app --interactive \
 #   --command "/bin/sh"
 #
-# IMPORTANT : le bloc load_balancer sera ajouté
-# dans alb.tf (étape 5) une fois le target group
-# défini. Sans lui, les tâches démarrent mais
-# ne reçoivent pas encore de trafic de l'ALB.
+# depends_on sur le listener : ECS ne peut enregistrer
+# les tâches dans le target group que si le listener
+# existe déjà. Sans ça, le premier apply peut échouer.
 # ==========================================
 
 resource "aws_ecs_service" "app" {
@@ -112,8 +111,16 @@ resource "aws_ecs_service" "app" {
     assign_public_ip = false
   }
 
+  load_balancer {
+    target_group_arn = aws_lb_target_group.app.arn
+    container_name   = "app"
+    container_port   = var.container_port
+  }
+
   deployment_circuit_breaker {
     enable   = true
     rollback = true
   }
+
+  depends_on = [aws_lb_listener.http]
 }
