@@ -1,14 +1,26 @@
-# Fichiers Terraform à ne PAS commit
+# Terraform — répertoire de travail local (binaires provider, cache)
 .terraform/
+
+# State Terraform — contient ARNs, IPs, et potentiellement des secrets
 *.tfstate
 *.tfstate.backup
-.terraform.lock.hcl
 
-# Secrets et variables sensibles
-*.tfvars
-*.auto.tfvars
+# Plan sérialisé — peut contenir des valeurs sensibles
+*.tfplan
+
+# Fichier de variables locales — contient budget_alert_email et autres valeurs sensibles
+# NE PAS commiter, mais garder un terraform.tfvars.example vide comme documentation
 terraform.tfvars
+*.auto.tfvars
 
-# Fichiers système
+# Credentials et clés — ne jamais commiter
+.env
+*.pem
+*.key
+
+# OS
 .DS_Store
 Thumbs.db
+
+# NOTE : .terraform.lock.hcl est intentionnellement SUIVI par git.
+# Il fixe les versions du provider pour garantir des builds reproductibles.
