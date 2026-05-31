@@ -4,7 +4,7 @@
 
 AI inference workloads introduce two coupled operational risks: uncontrolled data egress and unpredictable token consumption costs. The default architecture — routing model API traffic over the public internet via NAT gateways — expands the attack surface, complicates data governance, and exposes organisations to unbounded LLM costs if endpoints are abused.
 
-This project demonstrates a production-grade, zero-egress AWS architecture where all AI inference traffic remains strictly within the AWS network backbone via AWS PrivateLink. The workload runs on AWS ECS Fargate behind a WAF-protected Application Load Balancer (ALB), interacts with Amazon Bedrock via private VPC endpoints, and enforces granular cost attribution through tagged inference profiles.
+This project demonstrates a security-focused, zero-egress AWS architecture — designed as a portfolio-grade implementation — where all AI inference traffic remains strictly within the AWS network backbone via AWS PrivateLink. The workload runs on AWS ECS Fargate behind a WAF-protected Application Load Balancer (ALB), interacts with Amazon Bedrock via private VPC endpoints, and enforces granular cost attribution through tagged inference profiles.
 
 This repository is the result of a deliberate refactoring exercise. A traditional "Secure VPC" baseline (Bastion Host + EC2 + RDS) was systematically dismantled and re-architected against a strict mandate: **minimise operational ownership, eliminate permanent attack surfaces, and reduce fixed infrastructure costs.**
 
@@ -38,7 +38,7 @@ The architecture enforces strict network isolation, isolating public-facing ingr
 ```mermaid
 graph TD
     subgraph Public_Zone ["Public Ingress Zone (Internet Facing)"]
-        Internet([Internet]) -->|HTTPS 443| WAF[AWS WAF<br/>OWASP + Financial Rate Limit]
+        Internet([Internet]) -->|HTTP 80| WAF[AWS WAF<br/>OWASP + Financial Rate Limit]
         WAF --> ALB[Application Load Balancer<br/>Public Subnets]
     end
 
@@ -97,7 +97,7 @@ graph TD
 [ALB — public subnet]    ← Health checks, listener HTTP:80
    │
    ▼
-[Security Group ALB]     ← Ingress 80/443 internet → Egress 80 to sg_fargate only
+[Security Group ALB]     ← Ingress 80 internet → Egress 80 to sg_fargate only
    │
    ▼
 [Fargate Tasks]          ← Multi-AZ (AZ-a + AZ-b), no public IP, sg_fargate
@@ -116,7 +116,7 @@ Three security groups, chained with no overlap:
 
 | SG | Ingress | Egress |
 |---|---|---|
-| `sg_alb` | 80/443 from `0.0.0.0/0` | Port 80 to `sg_fargate` only |
+| `sg_alb` | Port 80 from `0.0.0.0/0` | Port 80 to `sg_fargate` only |
 | `sg_fargate` | Port 80 from `sg_alb` only | Port 443 to `sg_endpoints` only |
 | `sg_endpoints` | Port 443 from `sg_fargate` only | *(none)* |
 
@@ -145,6 +145,32 @@ A compromised Fargate task cannot reach the internet or any service outside the 
 | Bedrock inference profile (tagged) | Per-workload cost attribution in Cost Explorer |
 | Fargate (per-second billing) | No fixed cost for idle compute |
 | S3 Gateway Endpoint (free) | Zero data transfer charges for ECR image layers |
+
+---
+
+## Non-Goals / Scope Boundaries
+
+The following are intentional scope exclusions, not missing features:
+
+- **TLS termination:** No registered domain is required for this demo. A production deployment adds an ACM certificate and replaces the HTTP listener with HTTPS 443, with an HTTP→HTTPS redirect rule.
+- **Auto-scaling:** `desired_count = 1` is sufficient for demo validation. An ECS target-tracking scaling policy is added when a real load profile is known.
+- **Remote Terraform state:** Local state for single-engineer use. A production deployment adds an S3 backend with DynamoDB state locking.
+- **CloudWatch Alarms:** Container Insights is enabled and provides CPU/memory metrics. Alerting thresholds are workload-specific and belong to the operating team's runbook, not the infrastructure layer.
+- **CloudTrail / VPC Flow Logs:** Account-level audit trails are provisioned at the organisation or account layer, not the workload layer.
+- **Authentication:** No user identity model is in scope. API-level auth is added with Cognito or API Gateway when the real application is wired in.
+- **Multi-region / DR:** Single-region deployment. Cross-region failover is an account-level concern outside the scope of a single workload module.
+
+---
+
+## Failure Modes
+
+| Scenario | Behaviour |
+|---|---|
+| **ECS task crash** | The ECS service scheduler detects the unhealthy task and starts a replacement. The deployment circuit breaker (`rollback = true`) prevents a bad revision from staying up: if the replacement fails ALB health checks, ECS rolls back to the previous task definition revision automatically. |
+| **AZ outage** | The ALB spans two public subnets (AZ-a and AZ-b). The ECS service network configuration covers both private subnets. If one AZ becomes unavailable, the ALB stops routing to that zone and ECS reschedules surviving tasks in the healthy AZ. With `desired_count = 1`, expect a brief interruption during rescheduling. |
+| **WAF rate limit triggered** | A client exceeding 100 requests per 5 minutes per IP is blocked with HTTP 403 by the WAF before the request reaches the ALB. Fargate tasks and Bedrock are not invoked — this is the primary financial guard against denial-of-wallet attacks. |
+| **Bedrock throttling / unavailability** | Bedrock returns `ThrottlingException` or `ServiceUnavailableException` to the container. Retry logic with exponential backoff must be handled at the application layer. The infrastructure layer has no circuit breaker for Bedrock — adding one would require application-level middleware. |
+| **VPC endpoint failure** | If a VPC interface endpoint is degraded, traffic to the corresponding AWS service (ECR, Bedrock, CloudWatch, SSM) fails. ECS Exec becomes unavailable for debugging; container logs stop flowing to CloudWatch. The ALB continues to route to running tasks. Resolution: check endpoint health in the VPC console or re-apply Terraform to force endpoint recreation. |
 
 ---
 
