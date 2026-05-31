@@ -2,54 +2,69 @@
 
 ## Executive Summary
 
-Running AI inference on AWS introduces a surface area problem: the default path to model APIs goes through the public internet, which exposes traffic to interception, adds latency, and creates an uncontrolled cost vector — a single misconfigured endpoint hammered by a bot can generate thousands of Bedrock token charges before anyone notices.
+AI inference workloads introduce two coupled operational risks: uncontrolled data egress and unpredictable token consumption costs. The default architecture — routing model API traffic over the public internet via NAT gateways — expands the attack surface, complicates data governance, and exposes organisations to unbounded LLM costs if endpoints are abused.
 
-This project provisions a production-grade AWS infrastructure that routes all AI inference traffic exclusively through AWS PrivateLink — no NAT gateway, no public IPs on compute, no outbound internet from the workload. The application runs on ECS Fargate (serverless containers) behind a WAF-protected ALB, calls Amazon Bedrock via a private VPC endpoint, and exposes per-inference cost visibility through a tagged inference profile.
+This project demonstrates a production-grade, zero-egress AWS architecture where all AI inference traffic remains strictly within the AWS network backbone via AWS PrivateLink. The workload runs on AWS ECS Fargate behind a WAF-protected Application Load Balancer (ALB), interacts with Amazon Bedrock via private VPC endpoints, and enforces granular cost attribution through tagged inference profiles.
 
-It is also a deliberate refactoring exercise: the starting point was a classic "secure VPC" pattern (bastion host + EC2 + RDS). Every component was re-evaluated against two questions — does it justify its attack surface, and does it justify its cost?
+This repository is the result of a deliberate refactoring exercise. A traditional "Secure VPC" baseline (Bastion Host + EC2 + RDS) was systematically dismantled and re-architected against a strict mandate: **minimise operational ownership, eliminate permanent attack surfaces, and reduce fixed infrastructure costs.**
 
-**What was removed and why:**
+### Infrastructure Evolution
 
-| Removed | Replaced by | Reason |
+| Legacy Component | Cloud-Native Replacement | Architectural Rationale |
 |---|---|---|
-| Bastion host | ECS Exec (SSM) | Eliminates SSH, port 22, key management |
-| EC2 app instance | ECS Fargate | No OS patching, no instance lifecycle, pay-per-use |
-| RDS MySQL | *(nothing)* | No relational requirement; persistent cost with no workload |
-| NAT Gateway | VPC Interface Endpoints | Egress stays within AWS backbone; no internet exposure |
+| **Bastion Host** | ECS Exec (AWS Systems Manager) | Eliminates SSH, port 22 exposure, and key management overhead. |
+| **EC2 Instance** | ECS Fargate | Removes OS patching, instance lifecycle management, and shifts to a pure pay-per-use compute model. |
+| **RDS MySQL** | *(Removed)* | Eliminated persistent idle database costs; decoupled state from the inference pipeline. |
+| **NAT Gateway** | VPC Interface Endpoints | Restricts egress to the AWS backbone; removes default routes to the public internet. |
+
+---
+
+## Design Requirements & Constraints
+
+The target architecture was designed to satisfy a strict matrix of enterprise constraints:
+
+* **Data Sovereignty:** Zero outbound internet routing from the application subnets.
+* **Zero-Trust Access:** No permanent inbound management ports (no SSH, no RDP).
+* **Serverless Operations:** Maximise managed services to eliminate OS-level patching and maintenance.
+* **High Availability:** Multi-AZ deployment across independent Availability Zones.
+* **FinOps Governance:** Granular cost tracking per workload for LLM consumption and zero idle costs for non-utilised resources.
 
 ---
 
 ## Architecture Overview
 
+The architecture enforces strict network isolation, isolating public-facing ingress from private compute resources and internal AWS services.
+
 ```mermaid
 graph TD
-    Internet([Internet]) -->|HTTP / HTTPS| WAF[WAF\nOWASP + Rate Limit]
-    WAF --> ALB[Application Load Balancer\nSubnet Public]
-
-    subgraph VPC ["VPC 10.0.0.0/16 — eu-west-3"]
-        ALB -->|Port 80 — SG ALB| Fargate1[Fargate Task\nSubnet Privé 1 — AZ-a]
-        ALB -->|Port 80 — SG ALB| Fargate2[Fargate Task\nSubnet Privé 2 — AZ-b]
-
-        Fargate1 -->|HTTPS 443 — PrivateLink| EP[VPC Endpoints\nbedrock-runtime\necr.api / ecr.dkr\nlogs / ssmmessages]
-        Fargate2 -->|HTTPS 443 — PrivateLink| EP
-
-        EP -->|Gateway Endpoint| S3[(S3\nCouches images ECR)]
+    subgraph Public_Zone ["Public Ingress Zone (Internet Facing)"]
+        Internet([Internet]) -->|HTTPS 443| WAF[AWS WAF<br/>OWASP + Financial Rate Limit]
+        WAF --> ALB[Application Load Balancer<br/>Public Subnets]
     end
 
-    EP --- Bedrock[Amazon Bedrock\nInference Profile]
-    EP --- ECR[ECR Privé\nPull-through cache]
-    EP --- CW[CloudWatch Logs]
-    EP --- SSM[SSM Messages\nECS Exec]
+    subgraph Private_Zone ["Isolated Workload Zone (No Internet Route)"]
+        ALB -->|HTTP 80 - sg_alb| Fargate1[Fargate Task<br/>Private Subnet AZ-a]
+        ALB -->|HTTP 80 - sg_alb| Fargate2[Fargate Task<br/>Private Subnet AZ-b]
 
-    ECR -.->|Premier pull uniquement| ECRPublic[ECR Public\npublic.ecr.aws]
-```
+        Fargate1 -->|HTTPS 443 - sg_fargate| VPCE[VPC Interface Endpoints<br/>bedrock-runtime / ecr.api<br/>ecr.dkr / logs / ssmmessages]
+        Fargate2 -->|HTTPS 443 - sg_fargate| VPCE
 
-**Flux de débogage (sans SSH) :**
+        VPCE -->|Gateway Endpoint| S3[(Amazon S3<br/>ECR Image Layers)]
+    end
+
+    subgraph AWS_Backbone ["AWS Service Plane (PrivateLink)"]
+        VPCE --- Bedrock[Amazon Bedrock<br/>Inference Profile]
+        VPCE --- ECR[Private ECR<br/>Pull-Through Cache]
+        VPCE --- CW[CloudWatch Logs]
+        VPCE --- SSM[Systems Manager<br/>ECS Exec Session]
+    end
+
+    ECR -.->|First pull only| ECRPublic[ECR Public<br/>public.ecr.aws]
+
+    style Public_Zone fill:#f9fcfd,stroke:#333,stroke-width:1px
+    style Private_Zone fill:#f5f7f8,stroke:#333,stroke-width:1px
+    style AWS_Backbone fill:#eff2f3,stroke:#333,stroke-width:1px
 ```
-aws ecs execute-command --cluster <cluster> --task <id> \
-  --container app --interactive --command /bin/sh
-```
-Le canal passe par l'endpoint `ssmmessages` — aucun port ouvert, aucune clé SSH.
 
 ---
 
@@ -57,16 +72,16 @@ Le canal passe par l'endpoint `ssmmessages` — aucun port ouvert, aucune clé S
 
 | Decision | Rationale |
 |---|---|
-| **ECS Fargate over EC2** | Supprime la gestion du cycle de vie des instances (patching, AMI, monitoring OS). La facturation à la seconde d'utilisation correspond au profil d'un workload IA à charge variable. |
-| **VPC Interface Endpoints (PrivateLink) over NAT Gateway** | Le trafic vers Bedrock, ECR, CloudWatch et SSM ne quitte jamais le réseau AWS. Surface d'attaque réduite, pas de route par défaut vers internet dans les subnets privés. Coût comparable à un NAT gateway pour ce volume de services. |
-| **Gateway Endpoint S3 (gratuit)** | Les couches d'images Docker stockées par ECR sont sur S3. Sans ce gateway, le pull d'image échoue même si les endpoints ECR sont présents — erreur silencieuse difficile à diagnostiquer. |
-| **ECR pull-through cache over pull direct** | ECR Public (`public.ecr.aws`) n'est pas accessible via les VPC endpoints. Un pull direct depuis un VPC sans NAT produit une `CannotPullContainerError`. Le pull-through cache transforme une image publique en image privée, accessible via les endpoints existants. |
-| **WAF rate-based rule** | Double rôle : protection sécurité (brute force, DDoS L7) et protection financière. Un bot qui martèle l'endpoint déclenche des appels Bedrock facturés au token — le rate limit coupe le flux avant que la facture explose ("denial of wallet"). |
-| **Execution role / Task role séparés** | L'execution role est utilisé par ECS pour démarrer la tâche (pull image, écrire les logs). Le task role est utilisé par l'application dans le conteneur. En cas de compromission de l'app, l'attaquant obtient les permissions du task role (scoped), pas celles de l'execution role. |
-| **Bedrock Application Inference Profile** | Sans inference profile, tous les appels Bedrock apparaissent comme une ligne générique dans Cost Explorer. Le profil taggé (`Project`, `CostCenter`) permet une ventilation du coût par workload sans instrumentation custom. |
-| **ECS Exec over bastion** | Le bastion expose un port 22 permanent, nécessite des clés SSH distribuées, et crée une cible d'attaque dans le subnet public. ECS Exec ouvre un canal chiffré via SSM uniquement à la demande, sans port ouvert. |
-| **Deployment circuit breaker with rollback** | Si une nouvelle version de la task definition échoue les health checks ALB, ECS revient automatiquement à la révision précédente. Évite une indisponibilité prolongée lors d'un deploy raté. |
-| **ALB public subnet — Fargate private subnet** | L'ALB absorbe le trafic public et y applique le WAF avant de relayer vers Fargate. Les tâches n'ont aucune IP publique et aucune route internet. Seul l'ALB est exposé. |
+| **ECS Fargate over EC2** | Removes instance lifecycle management (patching, AMI, OS monitoring). Per-second billing matches the variable load profile of an AI inference workload. |
+| **VPC Interface Endpoints over NAT Gateway** | Traffic to Bedrock, ECR, CloudWatch, and SSM never leaves the AWS network. Reduced attack surface; no default internet route in private subnets. Cost-equivalent to a NAT gateway at this service volume. |
+| **Gateway Endpoint S3 (free)** | ECR stores image layers on S3. Without this gateway, image pulls fail even when ECR endpoints are correctly configured — a silent, hard-to-diagnose failure. |
+| **ECR Pull-Through Cache over direct pull** | ECR Public (`public.ecr.aws`) is not reachable via VPC endpoints. A direct pull from a VPC without NAT produces `CannotPullContainerError`. The pull-through cache promotes a public image to a private registry, reachable via existing endpoints. |
+| **WAF rate-based rule** | Dual purpose: security (brute force, L7 DDoS) and financial protection. A bot hammering the endpoint generates Bedrock token charges — the rate limit cuts traffic before costs escalate ("denial of wallet"). |
+| **Execution Role / Task Role separation** | The execution role is used by ECS to start the task (pull image, write logs). The task role is used by the application inside the container. A compromised container yields task role permissions (scoped), not execution role permissions. |
+| **Bedrock Application Inference Profile** | Without an inference profile, all Bedrock calls appear as a single generic line in Cost Explorer. A tagged profile (`Project`, `CostCenter`) enables per-workload cost attribution without custom instrumentation. |
+| **ECS Exec over Bastion Host** | A bastion exposes port 22 permanently, requires distributed SSH keys, and creates a persistent attack surface in the public subnet. ECS Exec opens an encrypted SSM channel on demand — no open ports, no keys. |
+| **Deployment Circuit Breaker with rollback** | If a new task definition revision fails ALB health checks, ECS automatically rolls back to the previous revision. Prevents sustained downtime from a failed deployment. |
+| **ALB in public subnet — Fargate in private subnets** | The ALB absorbs public traffic and applies the WAF before forwarding to Fargate. Tasks have no public IPs and no internet route. Only the ALB is internet-facing. |
 
 ---
 
@@ -79,18 +94,18 @@ Le canal passe par l'endpoint `ssmmessages` — aucun port ouvert, aucune clé S
 [WAF — Web ACL]          ← OWASP rules + Known Bad Inputs + Rate limit (100 req/5min/IP)
    │
    ▼
-[ALB — subnet public]    ← Health checks, listener HTTP:80
+[ALB — public subnet]    ← Health checks, listener HTTP:80
    │
    ▼
-[Security Group ALB]     ← Ingress 80/443 internet → Egress 80 vers sg_fargate uniquement
+[Security Group ALB]     ← Ingress 80/443 internet → Egress 80 to sg_fargate only
    │
    ▼
 [Fargate Tasks]          ← Multi-AZ (AZ-a + AZ-b), no public IP, sg_fargate
    │
-   ├──► [ecr.api + ecr.dkr endpoints]  → Pull image (manifeste + couches via S3)
-   ├──► [bedrock-runtime endpoint]     → Appel modèle via inference profile
-   ├──► [logs endpoint]                → Écriture CloudWatch Logs
-   └──► [ssmmessages endpoint]         → Canal ECS Exec (debug)
+   ├──► [ecr.api + ecr.dkr endpoints]  → Image pull (manifest + layers via S3)
+   ├──► [bedrock-runtime endpoint]     → Model invocation via inference profile
+   ├──► [logs endpoint]                → CloudWatch Logs write
+   └──► [ssmmessages endpoint]         → ECS Exec channel (debug)
 ```
 
 ---
@@ -101,35 +116,35 @@ Three security groups, chained with no overlap:
 
 | SG | Ingress | Egress |
 |---|---|---|
-| `sg_alb` | 80/443 depuis `0.0.0.0/0` | 80 vers `sg_fargate` uniquement |
-| `sg_fargate` | 80 depuis `sg_alb` uniquement | 443 vers `sg_endpoints` uniquement |
-| `sg_endpoints` | 443 depuis `sg_fargate` uniquement | *(aucun)* |
+| `sg_alb` | 80/443 from `0.0.0.0/0` | Port 80 to `sg_fargate` only |
+| `sg_fargate` | Port 80 from `sg_alb` only | Port 443 to `sg_endpoints` only |
+| `sg_endpoints` | Port 443 from `sg_fargate` only | *(none)* |
 
-Une tâche Fargate compromise ne peut pas atteindre internet ni un autre service non-endpoint.
+A compromised Fargate task cannot reach the internet or any service outside the endpoint layer.
 
 ---
 
 ## IAM — Least Privilege
 
-**Execution Role** (`ecs-task-execution`) — utilisé par ECS, pas par l'app :
-- `AmazonECSTaskExecutionRolePolicy` (managed) — pull ECR + logs CloudWatch
-- `ecr:BatchImportUpstreamImage` + `ecr:CreateRepository` sur `ecr-public/*` — pull-through cache au premier pull
+**Execution Role** (`ecs-task-execution`) — used by ECS, not by the application:
+- `AmazonECSTaskExecutionRolePolicy` (managed) — ECR pull + CloudWatch Logs write
+- `ecr:BatchImportUpstreamImage` + `ecr:CreateRepository` on `ecr-public/*` — pull-through cache on first pull
 
-**Task Role** (`ecs-task`) — utilisé par l'application dans le conteneur :
-- `ssmmessages:*` (4 actions) — ECS Exec uniquement
-- *(Bedrock à ajouter lors du swap vers l'app réelle)*
+**Task Role** (`ecs-task`) — used by the application inside the container:
+- `ssmmessages:*` (4 actions) — ECS Exec only
+- *(Bedrock permissions added when swapping to the real application)*
 
 ---
 
 ## Cost Controls
 
-| Mécanisme | Protection |
+| Mechanism | Protection |
 |---|---|
-| WAF rate-based rule (100 req/5min/IP) | Limite les appels Bedrock induits par du trafic abusif |
-| AWS Budget (alerte à 80% du seuil) | Notification avant dépassement du budget mensuel |
-| Bedrock inference profile taggé | Ventilation du coût par requête dans Cost Explorer |
-| Fargate (facturation à la seconde) | Pas de coût fixe pour des instances inutilisées |
-| Gateway Endpoint S3 (gratuit) | Zéro frais de transfert pour les couches d'images ECR |
+| WAF rate-based rule (100 req/5min/IP) | Limits Bedrock calls induced by abusive traffic |
+| AWS Budget (alert at 80% of threshold) | Notification before monthly budget is exceeded |
+| Bedrock inference profile (tagged) | Per-workload cost attribution in Cost Explorer |
+| Fargate (per-second billing) | No fixed cost for idle compute |
+| S3 Gateway Endpoint (free) | Zero data transfer charges for ECR image layers |
 
 ---
 
@@ -137,16 +152,16 @@ Une tâche Fargate compromise ne peut pas atteindre internet ni un autre service
 
 ```
 versions.tf          required_providers — aws ~> 5.0
-providers.tf         provider aws + default_tags globaux
-variables.tf         réseau / conteneur / monitoring
+providers.tf         provider aws + default_tags
+variables.tf         network / container / monitoring
 network.tf           VPC, subnets, IGW, route tables
 security_groups.tf   sg_alb / sg_fargate / sg_endpoints
-endpoints.tf         5 interface endpoints + gateway S3
-ecr.tf               pull-through cache ECR Public → privé
+endpoints.tf         5 interface endpoints + S3 gateway
+ecr.tf               pull-through cache ECR Public → private
 iam.tf               execution role + task role
 ecs.tf               cluster + task definition + service
-alb.tf               ALB + target group ip + listener HTTP
-waf.tf               Web ACL (OWASP + Known Bad + rate limit)
+alb.tf               ALB + IP target group + HTTP listener
+waf.tf               Web ACL (OWASP + Known Bad Inputs + rate limit)
 monitoring.tf        log group + budget + inference profile
 outputs.tf           alb_url, ecs_exec_command, ...
 ```
@@ -201,7 +216,7 @@ aws ecs execute-command \
 Billing → Cost Allocation Tags → activate `Project` and `CostCenter`.
 Required for the inference profile to appear as a separate line in Cost Explorer.
 
-**5. Swap to the real app**
+**5. Swap to the real application**
 
 In `ecr.tf`, update `local.nginx_image_uri` with the production image URI.
 Adjust `var.container_port` and `var.bedrock_model_id` as needed.
@@ -211,13 +226,13 @@ In `iam.tf`, add `bedrock:InvokeModel` on the inference profile ARN to the task 
 
 ## Why This Project Matters
 
-The classic "secure VPC" pattern — bastion, EC2, RDS — is a reasonable starting point but carries hidden costs: permanent attack surface (port 22), OS patching burden, and fixed database charges regardless of usage.
+The classic "secure VPC" pattern — bastion, EC2, RDS — is a reasonable starting point but carries hidden costs: a permanent attack surface (port 22), OS patching overhead, and fixed database charges regardless of usage.
 
-This project demonstrates that the same security posture can be achieved with a smaller attack surface and a lower cost floor by aligning architecture choices with workload characteristics:
+This project demonstrates that the same security posture can be achieved with a smaller attack surface and a lower cost floor by aligning architecture decisions with workload characteristics:
 
-- **Operational ownership is enforced architecturally.** No SSH keys to rotate, no bastion to monitor. Debug access is audited through SSM session logs automatically.
+- **Operational ownership is enforced architecturally.** No SSH keys to rotate, no bastion to monitor. Debug access is audited automatically through SSM session logs.
 - **The cost model matches the usage model.** Fargate bills per second of execution. An inference profile makes Bedrock costs attributable per workload, not just per account.
 - **Egress control is non-negotiable for AI workloads.** Routing model calls through the public internet is a data exposure risk. PrivateLink keeps inference traffic inside the AWS network with no configuration drift possible.
-- **Cost protection is a security concern.** Rate limiting at the WAF layer is the first line of defence against unbounded token consumption — a class of risk specific to LLM-backed endpoints.
+- **Cost protection is a security concern.** Rate limiting at the WAF layer is the first line of defence against unbounded token consumption — a class of risk specific to LLM-backed endpoints that did not exist in classic web architectures.
 
-The architecture is designed to be extended: swap the nginx test image for a Python app, add `bedrock:InvokeModel` to the task role, and the full inference pipeline is operational without touching the network or security layer.
+The architecture is designed to be extended: swap the nginx test image for a Python application, add `bedrock:InvokeModel` to the task role, and the full inference pipeline is operational without modifying the network or security layer.
