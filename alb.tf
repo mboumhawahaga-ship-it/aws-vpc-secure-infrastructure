@@ -2,11 +2,11 @@
 # APPLICATION LOAD BALANCER
 #
 # Point d'entrée public unique. L'ALB reçoit
-# le trafic HTTP/HTTPS depuis internet et le
-# distribue aux tâches Fargate dans les subnets
-# privés. Il est lui-même dans le subnet public
-# (accès internet via l'IGW).
+# le trafic HTTP depuis internet et le distribue
+# aux tâches Fargate dans les subnets privés.
 #
+# Deux subnets publics (AZ-a + AZ-b) : AWS exige
+# au moins 2 AZ pour un ALB internet-facing.
 # internal = false : ALB public, exposé sur internet.
 # ==========================================
 
@@ -15,7 +15,7 @@ resource "aws_lb" "main" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = [aws_subnet.public.id]
+  subnets            = [aws_subnet.public.id, aws_subnet.public_2.id]
 
   # Protection contre la suppression accidentelle via la console.
   # Ne bloque pas terraform destroy.

@@ -24,6 +24,24 @@ resource "aws_vpc_endpoint" "interface" {
   security_group_ids  = [aws_security_group.endpoints.id]
   private_dns_enabled = true
 
+  # Restreint l'usage des endpoints aux seuls rôles ECS de ce projet.
+  # Sans policy, AWS applique "allow * from *" — n'importe quelle
+  # identité du compte (ou d'un VPC peeré) peut utiliser ces endpoints.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        AWS = [
+          aws_iam_role.ecs_execution_role.arn,
+          aws_iam_role.ecs_task_role.arn
+        ]
+      }
+      Action   = "*"
+      Resource = "*"
+    }]
+  })
+
   tags = { Name = "${var.project_name}-endpoint-${each.key}" }
 }
 

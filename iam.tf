@@ -17,12 +17,23 @@ resource "aws_iam_role" "ecs_execution_role" {
   name        = "${var.project_name}-ecs-execution-role"
   description = "ECS execution role - pull ECR image + write logs"
 
+  # aws:SourceArn + aws:SourceAccount : restreint l'AssumeRole aux
+  # tâches ECS de CE compte uniquement. Sans ça, n'importe quelle
+  # task definition du compte peut assumer ce rôle.
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
       Principal = { Service = "ecs-tasks.amazonaws.com" }
       Action    = "sts:AssumeRole"
+      Condition = {
+        ArnLike = {
+          "aws:SourceArn" = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*"
+        }
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
     }]
   })
 }
@@ -78,6 +89,14 @@ resource "aws_iam_role" "ecs_task_role" {
       Effect    = "Allow"
       Principal = { Service = "ecs-tasks.amazonaws.com" }
       Action    = "sts:AssumeRole"
+      Condition = {
+        ArnLike = {
+          "aws:SourceArn" = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*"
+        }
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
     }]
   })
 }

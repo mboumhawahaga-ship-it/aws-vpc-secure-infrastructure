@@ -79,8 +79,11 @@ resource "aws_ecs_task_definition" "app" {
 #
 # Un service maintient N tâches en vie en
 # permanence et les redémarre si elles tombent.
-# Multi-AZ : les tâches sont réparties sur
-# private_1 (AZ a) et private_2 (AZ b).
+# La configuration réseau couvre les deux AZ
+# (private_1 AZ-a, private_2 AZ-b). Avec
+# desired_count = 1, ECS place la tâche dans
+# un seul AZ ; le scheduler peut redémarrer
+# dans l'autre AZ en cas de défaillance.
 #
 # assign_public_ip = false : les tâches sont
 # dans les subnets privés, aucune IP publique.
