@@ -76,6 +76,8 @@ Serverless compute (ECS Fargate) removes:
 | **Idle Compute Cost** | Cost during no traffic | ~0 (Fargate) |
 | **Security Attack Surface** | Public entry points exposed | Minimal (ALB only) |
 
+> **Estimated impact:** Eliminates 100% of public internet egress for AI inference traffic using PrivateLink-based architecture. Prevents uncontrolled LLM cost spikes (denial-of-wallet risk) through WAF rate limiting and request throttling.
+
 ---
 
 ## 🏗️ Architecture Overview
