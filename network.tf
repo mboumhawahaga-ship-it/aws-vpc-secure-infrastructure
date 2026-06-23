@@ -14,17 +14,27 @@ resource "aws_vpc" "main" {
 # SUBNETS
 # ==========================================
 
-# Subnet public : uniquement pour le bastion host
+# Subnet public AZ-a : ALB (première AZ)
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.public_subnet_cidr
   availability_zone       = "${var.aws_region}a"
-  map_public_ip_on_launch = false # Pas d'IP publique automatique
+  map_public_ip_on_launch = false
 
-  tags = { Name = "${var.project_name}-subnet-public" }
+  tags = { Name = "${var.project_name}-subnet-public-az-a" }
 }
 
-# Subnet privé 1 : instances EC2 applicatives
+# Subnet public AZ-b : ALB (deuxième AZ — requis pour ALB multi-AZ)
+resource "aws_subnet" "public_2" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnet_2_cidr
+  availability_zone       = "${var.aws_region}b"
+  map_public_ip_on_launch = false
+
+  tags = { Name = "${var.project_name}-subnet-public-az-b" }
+}
+
+# Subnet privé 1 : tâches Fargate (AZ a)
 resource "aws_subnet" "private_1" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.private_subnet_1_cidr
@@ -33,7 +43,7 @@ resource "aws_subnet" "private_1" {
   tags = { Name = "${var.project_name}-subnet-private-1" }
 }
 
-# Subnet privé 2 : RDS (AZ différente pour haute disponibilité)
+# Subnet privé 2 : tâches Fargate (AZ b) — multi-AZ
 resource "aws_subnet" "private_2" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.private_subnet_2_cidr
@@ -70,6 +80,11 @@ resource "aws_route_table" "public" {
 
 resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_2" {
+  subnet_id      = aws_subnet.public_2.id
   route_table_id = aws_route_table.public.id
 }
 

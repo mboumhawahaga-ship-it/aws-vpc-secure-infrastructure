@@ -1,110 +1,105 @@
 # ==========================================
-# SECURITY GROUP - BASTION (subnet public)
-# Seul point d'entrée SSH depuis internet
-# Restreint à votre IP uniquement
+# SECURITY GROUP — ALB
+# Reçoit le trafic HTTP depuis internet.
+# Seul composant exposé publiquement.
+# Pas de règle HTTPS : aucun listener TLS
+# n'est configuré (hors périmètre de ce projet).
+#
+# egress = [] : supprime la règle AWS par défaut
+# "allow all outbound". Les règles egress sont gérées
+# exclusivement via aws_vpc_security_group_egress_rule
+# (compatibles avec egress = [], contrairement à
+# aws_security_group_rule).
 # ==========================================
 
-resource "aws_security_group" "bastion" {
-  name        = "${var.project_name}-sg-bastion"
-  description = "Bastion host - SSH restreint a une IP specifique"
+resource "aws_security_group" "alb" {
+  name        = "${var.project_name}-sg-alb"
+  description = "ALB - HTTP port 80 depuis internet"
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    description = "SSH depuis votre IP uniquement"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_ssh_cidr]
-  }
+  egress = []
 
-  egress {
-    description = "SSH vers les instances privees uniquement"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.private_subnet_1_cidr]
-  }
+  tags = { Name = "${var.project_name}-sg-alb" }
+}
 
-  tags = { Name = "${var.project_name}-sg-bastion" }
+resource "aws_vpc_security_group_ingress_rule" "alb_ingress_http" {
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTP public"
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_egress_to_fargate" {
+  security_group_id            = aws_security_group.alb.id
+  description                  = "To Fargate tasks (container port)"
+  from_port                    = 80
+  to_port                      = 80
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.fargate.id
 }
 
 # ==========================================
-# SECURITY GROUP - EC2 APPLICATIF (subnet privé)
-# Accessible uniquement depuis le bastion (SSH)
-# et depuis internet via HTTP (port 80)
+# SECURITY GROUP — FARGATE
+# Tâches privées dans les subnets privés.
+# Accepte uniquement le trafic de l'ALB.
+# Sort uniquement vers les VPC endpoints (HTTPS).
 # ==========================================
 
-resource "aws_security_group" "app" {
-  name        = "${var.project_name}-sg-app"
-  description = "Instance applicative privee - SSH depuis bastion uniquement"
+resource "aws_security_group" "fargate" {
+  name        = "${var.project_name}-sg-fargate"
+  description = "Fargate tasks - ingress ALB, egress VPC endpoints"
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    description     = "SSH depuis le bastion uniquement"
-    from_port       = 22
-    to_port         = 22
-    protocol        = "tcp"
-    security_groups = [aws_security_group.bastion.id]
-  }
+  egress = []
 
-  ingress {
-    description = "HTTP depuis le subnet public uniquement"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = [var.public_subnet_cidr]
-  }
+  tags = { Name = "${var.project_name}-sg-fargate" }
+}
 
-  egress {
-    description     = "MySQL vers RDS uniquement"
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = [aws_security_group.rds.id]
-  }
+resource "aws_vpc_security_group_ingress_rule" "fargate_ingress_from_alb" {
+  security_group_id            = aws_security_group.fargate.id
+  description                  = "From ALB"
+  from_port                    = 80
+  to_port                      = 80
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.alb.id
+}
 
-  egress {
-    description = "HTTPS sortant pour updates via NAT"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    description = "HTTP sortant pour updates via NAT"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "${var.project_name}-sg-app" }
+# Tout le trafic sortant passe par les VPC endpoints (port 443).
+# Couvre : ECR (pull image), Bedrock, CloudWatch Logs, SSM (ECS Exec).
+resource "aws_vpc_security_group_egress_rule" "fargate_egress_to_endpoints" {
+  security_group_id            = aws_security_group.fargate.id
+  description                  = "HTTPS vers VPC endpoints (ECR, Bedrock, logs, SSM)"
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.endpoints.id
 }
 
 # ==========================================
-# SECURITY GROUP - RDS (subnet privé)
-# Accessible uniquement depuis l'instance EC2 app
-# Aucun accès depuis internet, jamais
+# SECURITY GROUP — VPC ENDPOINTS
+# Autorise uniquement les tâches Fargate
+# à contacter les services AWS via PrivateLink.
+# Les endpoints n'initient pas de connexions
+# sortantes : egress = [] est intentionnel.
 # ==========================================
 
-resource "aws_security_group" "rds" {
-  name        = "${var.project_name}-sg-rds"
-  description = "RDS MySQL - accessible uniquement depuis l'instance app"
+resource "aws_security_group" "endpoints" {
+  name        = "${var.project_name}-sg-endpoints"
+  description = "VPC endpoints - ingress 443 depuis Fargate uniquement"
   vpc_id      = aws_vpc.main.id
 
-  tags = { Name = "${var.project_name}-sg-rds" }
+  egress = []
+
+  tags = { Name = "${var.project_name}-sg-endpoints" }
 }
 
-# Règle séparée pour éviter la référence circulaire entre sg_app et sg_rds
-resource "aws_security_group_rule" "rds_ingress_from_app" {
-  type                     = "ingress"
-  description              = "MySQL depuis l'instance app uniquement"
-  from_port                = 3306
-  to_port                  = 3306
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.rds.id
-  source_security_group_id = aws_security_group.app.id
+resource "aws_vpc_security_group_ingress_rule" "endpoints_ingress_from_fargate" {
+  security_group_id            = aws_security_group.endpoints.id
+  description                  = "HTTPS from Fargate tasks only"
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.fargate.id
 }
-
-# Pas d'egress sur RDS : la base de données ne doit initier aucune connexion sortante

@@ -11,52 +11,27 @@ variable "vpc_cidr" {
 }
 
 variable "public_subnet_cidr" {
-  description = "CIDR du subnet public (bastion)"
+  description = "CIDR du subnet public AZ-a (ALB)"
   type        = string
   default     = "10.0.1.0/24"
 }
 
+variable "public_subnet_2_cidr" {
+  description = "CIDR du subnet public AZ-b (ALB multi-AZ)"
+  type        = string
+  default     = "10.0.4.0/24"
+}
+
 variable "private_subnet_1_cidr" {
-  description = "CIDR du subnet privé 1 (EC2 applicatif)"
+  description = "CIDR du subnet privé 1 (Fargate AZ a)"
   type        = string
   default     = "10.0.2.0/24"
 }
 
 variable "private_subnet_2_cidr" {
-  description = "CIDR du subnet privé 2 (RDS)"
+  description = "CIDR du subnet privé 2 (Fargate AZ b)"
   type        = string
   default     = "10.0.3.0/24"
-}
-
-variable "allowed_ssh_cidr" {
-  description = "Votre IP publique uniquement pour SSH sur le bastion (ex: 203.0.113.10/32)"
-  type        = string
-  # Remplacer par : curl ifconfig.me
-  default     = "REMPLACER_PAR_VOTRE_IP/32"
-}
-
-variable "ec2_ami" {
-  description = "AMI Amazon Linux 2023 - eu-west-3"
-  type        = string
-  default     = "ami-00ac45f3035ff009e"
-}
-
-variable "ec2_instance_type" {
-  description = "Type d'instance EC2"
-  type        = string
-  default     = "t3.micro"
-}
-
-variable "db_name" {
-  description = "Nom de la base de données"
-  type        = string
-  default     = "appdb"
-}
-
-variable "db_username" {
-  description = "Nom d'utilisateur admin RDS"
-  type        = string
-  default     = "dbadmin"
 }
 
 variable "project_name" {
@@ -71,8 +46,51 @@ variable "environment" {
   default     = "dev"
 }
 
-variable "key_pair_name" {
-  description = "Nom de la key pair AWS pour accès SSH (créer via AWS Console > EC2 > Key Pairs)"
+# ==========================================
+# Variables conteneur (ajoutées avec ecs.tf)
+# ==========================================
+
+variable "container_cpu" {
+  description = "CPU alloué à la tâche Fargate (unités : 1 vCPU = 1024)"
+  type        = number
+  default     = 256
+}
+
+variable "container_memory" {
+  description = "Mémoire allouée à la tâche Fargate (MiB)"
+  type        = number
+  default     = 512
+}
+
+variable "container_port" {
+  description = "Port exposé par le conteneur (nginx = 80, app réelle = à ajuster)"
+  type        = number
+  default     = 80
+}
+
+variable "app_desired_count" {
+  description = "Nombre de tâches Fargate souhaitées"
+  type        = number
+  default     = 1
+}
+
+# ==========================================
+# Variables monitoring (ajoutées avec monitoring.tf)
+# ==========================================
+
+variable "budget_limit_usd" {
+  description = "Seuil mensuel de dépenses AWS en USD (alerte à 80%)"
   type        = string
-  default     = "REMPLACER_PAR_VOTRE_KEY_PAIR"
+  default     = "50"
+}
+
+variable "budget_alert_email" {
+  description = "Email pour les alertes budget AWS (obligatoire)"
+  type        = string
+}
+
+variable "bedrock_model_id" {
+  description = "ID du modèle Bedrock pour l'inference profile"
+  type        = string
+  default     = "anthropic.claude-3-haiku-20240307-v1:0"
 }

@@ -1,68 +1,125 @@
 # ==========================================
-# IAM - Least Privilege pour EC2
-# Permissions minimales : lire le secret RDS + auth IAM RDS
+# IAM — EXECUTION ROLE
+#
+# Utilisé par ECS lui-même (pas par l'app)
+# pour démarrer la tâche :
+#   - pull de l'image depuis ECR privé
+#   - création du dépôt pull-through cache
+#     au premier pull
+#   - écriture des logs dans CloudWatch
+#
+# Si un attaquant compromet le conteneur,
+# il obtient le TASK ROLE (ci-dessous),
+# pas celui-ci.
 # ==========================================
 
-data "aws_caller_identity" "current" {}
+resource "aws_iam_role" "ecs_execution_role" {
+  name        = "${var.project_name}-ecs-execution-role"
+  description = "ECS execution role - pull ECR image + write logs"
 
-resource "aws_iam_role" "ec2_app_role" {
-  name        = "${var.project_name}-ec2-role"
-  description = "Rôle EC2 - accès minimal RDS IAM auth + lecture secret"
+  # aws:SourceArn + aws:SourceAccount : restreint l'AssumeRole aux
+  # tâches ECS de CE compte uniquement. Sans ça, n'importe quelle
+  # task definition du compte peut assumer ce rôle.
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        ArnLike = {
+          "aws:SourceArn" = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*"
+        }
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
+  })
+}
+
+# Managed policy AWS : permissions standard pour l'execution role ECS.
+# Couvre : pull ECR, écriture CloudWatch Logs, lecture Secrets Manager
+# (non utilisé ici, mais inclus dans la policy officielle).
+resource "aws_iam_role_policy_attachment" "ecs_execution_managed" {
+  role       = aws_iam_role.ecs_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Permissions supplémentaires pour le pull-through cache.
+# Sans elles, ECS peut pull depuis un dépôt existant mais pas
+# créer le dépôt miroir au premier pull d'une nouvelle image.
+resource "aws_iam_role_policy" "ecs_execution_pull_through" {
+  name = "ecr-pull-through-cache"
+  role = aws_iam_role.ecs_execution_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ecr:BatchImportUpstreamImage",
+        "ecr:CreateRepository"
+      ]
+      Resource = "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/ecr-public/*"
+    }]
+  })
+}
+
+# ==========================================
+# IAM — TASK ROLE
+#
+# Utilisé par l'APPLICATION dans le conteneur.
+# Principe de moindre privilège : l'app ne peut
+# faire que ce dont elle a besoin.
+#
+# Phase test (nginx) : permissions SSM pour
+# ECS Exec (debug sans SSH).
+# Phase prod : ajouter bedrock:InvokeModel
+# sur l'inference profile (dans monitoring.tf).
+# ==========================================
+
+resource "aws_iam_role" "ecs_task_role" {
+  name        = "${var.project_name}-ecs-task-role"
+  description = "ECS task role - app permissions (SSM exec + Bedrock)"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
       Action    = "sts:AssumeRole"
-    }]
-  })
-
-  tags = { Name = "${var.project_name}-ec2-role" }
-}
-
-# Permission 1 : authentification IAM à RDS uniquement
-resource "aws_iam_policy" "rds_iam_auth" {
-  name        = "${var.project_name}-rds-iam-auth"
-  description = "Autoriser uniquement la connexion IAM à cette instance RDS"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "rds-db:connect"
-      Resource = "arn:aws:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:${aws_db_instance.mysql.resource_id}/${var.db_username}"
+      Condition = {
+        ArnLike = {
+          "aws:SourceArn" = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*"
+        }
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
     }]
   })
 }
 
-# Permission 2 : lire le mot de passe RDS depuis le state Terraform
-# En production : remplacer par Secrets Manager
-resource "aws_iam_policy" "read_rds_secret" {
-  name        = "${var.project_name}-read-rds-secret"
-  description = "Placeholder - en production utiliser Secrets Manager"
+# ECS Exec : permet de se connecter à un conteneur en cours
+# d'exécution via "aws ecs execute-command" sans SSH ni bastion.
+# Les quatre actions ssmmessages sont toutes requises ;
+# elles ne supportent pas de restriction par ressource.
+resource "aws_iam_role_policy" "ecs_task_ssm_exec" {
+  name = "ecs-exec-ssm"
+  role = aws_iam_role.ecs_task_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Deny"
-      Action   = "secretsmanager:*"
+      Effect = "Allow"
+      Action = [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel"
+      ]
       Resource = "*"
     }]
   })
-}
-
-resource "aws_iam_role_policy_attachment" "attach_rds_auth" {
-  role       = aws_iam_role.ec2_app_role.name
-  policy_arn = aws_iam_policy.rds_iam_auth.arn
-}
-
-resource "aws_iam_role_policy_attachment" "attach_read_secret" {
-  role       = aws_iam_role.ec2_app_role.name
-  policy_arn = aws_iam_policy.read_rds_secret.arn
-}
-
-resource "aws_iam_instance_profile" "ec2_app_profile" {
-  name = "${var.project_name}-ec2-profile"
-  role = aws_iam_role.ec2_app_role.name
 }

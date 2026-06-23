@@ -1,135 +1,252 @@
-# 🔒 AWS VPC Secure Infrastructure
+# Secure Private Bedrock Platform on AWS
 
-Infrastructure réseau AWS sécurisée déployée avec Terraform, démontrant l'isolation réseau entre subnet public et subnet privé, le principe du moindre privilège IAM, et les bonnes pratiques de sécurité cloud.
+## Overview
+
+This project provides a production-ready, security-first infrastructure for deploying containerized GenAI applications on AWS.
+
+The architecture enables private access to Amazon Bedrock from ECS Fargate workloads without exposing containers to the public internet.
+
+All communication with AWS services occurs exclusively through AWS PrivateLink VPC Endpoints, eliminating outbound internet access and significantly reducing the attack surface.
+
+The platform is designed for organizations requiring secure, compliant, and cost-aware GenAI deployments.
+
+---
+
+## Business Problem
+
+Most GenAI workloads deployed in the cloud rely on public internet connectivity, NAT Gateways, and permissive outbound access.
+
+This creates several challenges:
+
+* Increased attack surface.
+* Difficult compliance and audit requirements.
+* Higher networking costs.
+* Limited control over AI workload exposure.
+* Risk of uncontrolled AI consumption ("denial of wallet").
+
+This architecture addresses these concerns by implementing a fully private, serverless, and security-hardened GenAI platform.
+
+---
+
+## Key Features
+
+* Fully private ECS Fargate workloads.
+* Zero outbound internet connectivity.
+* Private Amazon Bedrock access through AWS PrivateLink.
+* Multi-AZ deployment architecture.
+* AWS WAF protection with OWASP managed rules.
+* Rate limiting to protect against denial-of-wallet attacks.
+* ECS Exec debugging without SSH or bastion hosts.
+* Cost governance through AWS Budgets.
+* Bedrock cost attribution using Application Inference Profiles.
+* Automatic deployment rollback using ECS circuit breakers.
 
 ---
 
 ## Architecture
 
+Request flow:
+
 ```
-                        INTERNET
-                            │
-                     ┌──────▼──────┐
-                     │     IGW     │
-                     └──────┬──────┘
-                            │
-          ┌─────────────────▼──────────────────┐
-          │         VPC  10.0.0.0/16            │
-          │                                     │
-          │  ┌──────────────────────────────┐   │
-          │  │   Subnet Public 10.0.1.0/24  │   │
-          │  │                              │   │
-          │  │   ┌─────────────────────┐    │   │
-          │  │   │   Bastion Host      │    │   │
-          │  │   │   (SSH depuis       │    │   │
-          │  │   │    votre IP only)   │    │   │
-          │  │   └──────────┬──────────┘    │   │
-          │  └──────────────┼───────────────┘   │
-          │                 │ SSH only           │
-          │  ┌──────────────▼───────────────┐   │
-          │  │  Subnet Privé 1 10.0.2.0/24  │   │
-          │  │                              │   │
-          │  │   ┌─────────────────────┐    │   │
-          │  │   │   EC2 App (nginx)   │    │   │
-          │  │   │   Pas d'IP publique │    │   │
-          │  │   └──────────┬──────────┘    │   │
-          │  └──────────────┼───────────────┘   │
-          │                 │ MySQL 3306 only    │
-          │  ┌──────────────▼───────────────┐   │
-          │  │  Subnet Privé 2 10.0.3.0/24  │   │
-          │  │                              │   │
-          │  │   ┌─────────────────────┐    │   │
-          │  │   │   RDS MySQL         │    │   │
-          │  │   │   Chiffré, IAM auth │    │   │
-          │  │   │   Jamais public     │    │   │
-          │  │   └─────────────────────┘    │   │
-          │  └──────────────────────────────┘   │
-          └─────────────────────────────────────┘
+Internet
+    ↓
+AWS WAF
+    ↓
+Application Load Balancer
+    ↓
+Private ECS Fargate Tasks
+    ↓
+AWS PrivateLink VPC Endpoints
+    ↓
+Amazon Bedrock
 ```
+
+Containers never access the public internet.
+
+All AWS service communication uses private VPC endpoints.
 
 ---
 
-## Principes de sécurité appliqués
+## AWS Services
 
-**Isolation réseau**
-- Le subnet privé n'a aucune route vers internet
-- RDS accessible uniquement depuis l'instance EC2 app
-- L'instance app accessible uniquement via le bastion
-
-**Least Privilege**
-- SSH restreint à une seule IP (la vôtre)
-- Security group RDS : zéro egress, ingress MySQL depuis EC2 uniquement
-- IAM role EC2 : uniquement `rds-db:connect` sur cette instance RDS
-
-**Chiffrement**
-- EBS chiffré sur les deux instances EC2
-- Storage RDS chiffré (gp3)
-- IMDSv2 obligatoire sur les instances (protection SSRF)
-
-**Pas de credentials hardcodés**
-- Mot de passe RDS généré automatiquement par Terraform (`random_password`)
-- Jamais de secrets dans le code source
+* Amazon VPC
+* Amazon ECS Fargate
+* Amazon ECR
+* Elastic Load Balancer
+* AWS WAF
+* Amazon Bedrock
+* AWS PrivateLink
+* Amazon CloudWatch
+* AWS IAM
+* AWS Systems Manager
+* AWS Budgets
+* AWS STS
 
 ---
 
-## Structure du projet
+## Security Controls
 
-```
-├── main.tf               # Providers (aws, random) + tags globaux
-├── variables.tf          # Toutes les variables paramétrables
-├── vpc.tf                # VPC, subnets, IGW, route tables
-├── security_groups.tf    # SG bastion / app / rds
-├── ec2.tf                # Bastion (public) + App (privée)
-├── iam.tf                # Rôle IAM least-privilege pour EC2
-├── rds.tf                # RDS MySQL + mot de passe auto-généré
-└── outputs.tf            # IPs, endpoint RDS, commandes SSH
-```
+### Network Security
+
+* Multi-AZ VPC architecture.
+* Private application subnets.
+* No public IP addresses on workloads.
+* No NAT Gateway.
+* No outbound internet routes.
+* All AWS traffic routed through PrivateLink.
+
+### Identity & Access Management
+
+* Least-privilege IAM roles.
+* Separate execution and task roles.
+* STS trust restrictions using `aws:SourceArn` and `aws:SourceAccount`.
+* Endpoint policies restricted to ECS roles only.
+
+### Threat Protection
+
+* AWS WAF managed rules.
+* OWASP Core Rule Set.
+* Known Bad Inputs protection.
+* Rate limiting (100 requests / 5 minutes / IP).
+
+### Observability
+
+* Container Insights enabled.
+* Centralized CloudWatch logging.
+* WAF metrics and sampled requests.
+* Budget alerts and cost monitoring.
 
 ---
 
-## Stack technique
+## FinOps Capabilities
 
-- **IaC** : Terraform ~> 5.0
-- **Cloud** : AWS (eu-west-3 — Paris)
-- **Compute** : EC2 t3.micro, Amazon Linux 2023
-- **Database** : RDS MySQL 8.0, db.t3.micro
-- **Sécurité** : IAM, Security Groups, EBS encryption, IMDSv2
+| Capability | Status |
+|---|---|
+| Budget Governance | ✓ |
+| Bedrock Cost Attribution | ✓ |
+| Denial-of-Wallet Protection | ✓ |
+| Serverless Compute | ✓ |
+| NAT Gateway Elimination | ✓ |
+| Autoscaling | Planned |
+| Rightsizing | Planned |
 
 ---
 
-## Déploiement
+## Estimated Business Impact
 
-**Prérequis** : AWS CLI configuré, Terraform installé, une key pair EC2 existante.
+Conservative estimates based on AWS pricing and FinOps practices:
 
-**1. Configurer vos valeurs dans `variables.tf`**
-```hcl
-variable "allowed_ssh_cidr" {
-  default = "VOTRE_IP/32"       # curl ifconfig.me
-}
-variable "key_pair_name" {
-  default = "NOM_DE_VOTRE_KEY"
-}
-```
+* Elimination of NAT Gateways reduces networking costs by approximately $45–$60/month per environment.
+* Private networking significantly reduces exposure to internet-based threats.
+* WAF rate limiting helps prevent uncontrolled AI consumption and unexpected LLM spending.
+* Bedrock cost attribution improves AI cost visibility across teams and workloads.
+* Zero-trust networking simplifies compliance for regulated workloads.
 
-**2. Déployer**
+---
+
+## Example Cost Optimization
+
+Traditional architecture:
+
+* NAT Gateway × 2 (Multi-AZ): ~$65/month
+* Public outbound access required.
+
+This architecture:
+
+* No NAT Gateway required.
+* Private AWS service connectivity only.
+
+Estimated savings:
+
+* Approximately $50/month per environment.
+
+---
+
+## Estimated Monthly Cost
+
+### Development Environment
+
+Estimated monthly cost: **$70–$75/month**
+
+| Component | Cost |
+|---|---|
+| VPC Interface Endpoints × 5 (× 2 AZ) | ~$36 |
+| Application Load Balancer | ~$18 |
+| ECS Fargate (256 CPU / 512 MB, 24/7) | ~$9 |
+| AWS WAF | ~$6 |
+| Amazon Bedrock (low usage) | ~$1–5 |
+| CloudWatch Logs | ~$1 |
+
+### Production Environment
+
+Estimated monthly cost: **$120–$200/month**
+
+Primary cost driver: Amazon Bedrock token consumption.
+
+| Component | Cost |
+|---|---|
+| Amazon Bedrock (moderate usage) | ~$20–100 |
+| Application Load Balancer | ~$25 |
+| VPC Interface Endpoints × 5 (× 2 AZ) | ~$36 |
+| ECS Fargate × 2 (512 CPU / 1 GB) | ~$25 |
+| AWS WAF | ~$10 |
+| CloudWatch Logs + metrics | ~$5 |
+
+---
+
+## Technical Highlights
+
+* Zero Trust networking principles.
+* Fully private GenAI inference architecture.
+* Serverless container platform.
+* AWS PrivateLink integration.
+* Multi-AZ high availability.
+* Security-by-design approach.
+* Infrastructure as Code with Terraform.
+* Cost-aware GenAI architecture.
+
+---
+
+## Getting Started
+
 ```bash
+# Deploy
+cd terraform
 terraform init
-terraform plan
-terraform apply
+terraform apply \
+  -var="budget_alert_email=your@email.com"
 ```
 
-**3. Se connecter**
+After deployment:
+
 ```bash
-# Accès au bastion
-ssh -i <votre-cle.pem> ec2-user@<bastion_public_ip>
+# Validate
+curl http://$(terraform output -raw alb_url)
 
-# Accès à l'instance privée via le bastion (SSH jump)
-ssh -i <votre-cle.pem> -J ec2-user@<bastion_ip> ec2-user@<app_private_ip>
+# Debug container without SSH
+aws ecs execute-command \
+  --cluster <cluster-name> \
+  --task <task-id> \
+  --container app \
+  --interactive \
+  --command /bin/sh
 ```
 
-**4. Détruire après démo**
-```bash
-terraform destroy
-```
+---
 
-> ⚠️ Penser à détruire l'infrastructure après les tests pour éviter les frais RDS (~$15/mois).
+## Future Improvements
+
+* ECS Service Auto Scaling.
+* Scale-to-zero capabilities.
+* CI/CD pipeline with GitHub Actions and OIDC.
+* Bedrock Guardrails integration.
+* Private API authentication.
+* Knowledge Bases for Amazon Bedrock.
+* Multi-account landing zone support.
+* Continuous security scanning.
+
+---
+
+## License
+
+MIT
